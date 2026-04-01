@@ -1,0 +1,934 @@
+<!DOCTYPE html>
+
+<html lang="ja">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no,viewport-fit=cover"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="theme-color" content="#2a2520"/>
+<title>お酒図鑑</title>
+<link href="https://fonts.googleapis.com/css2?family=Zen+Kurenaido&display=swap" rel="stylesheet"/>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body,#root{width:100%;height:100%;overflow-x:hidden;background:#2a2520}
+body{
+  padding-top:env(safe-area-inset-top);
+  padding-bottom:env(safe-area-inset-bottom);
+  padding-left:env(safe-area-inset-left);
+  padding-right:env(safe-area-inset-right);
+}
+html{overscroll-behavior:none;-webkit-overflow-scrolling:touch}
+</style>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useRef, useEffect, useCallback } = React;
+
+const STORAGE_KEY = “osake-zukan-entries”;
+const ITEMS_PER_PAGE = 9;
+const NAME_COLORS = [
+{ color: “#2c2420”, name: “黒” },
+{ color: “#c0392b”, name: “赤” },
+{ color: “#2980b9”, name: “青” },
+{ color: “#27ae60”, name: “緑” },
+{ color: “#8e44ad”, name: “紫” },
+{ color: “#e67e22”, name: “橙” },
+{ color: “#f1c40f”, name: “黄” },
+];
+
+async function loadEntries() {
+try {
+const raw = localStorage.getItem(STORAGE_KEY);
+return raw ? JSON.parse(raw) : [];
+} catch { return []; }
+}
+async function saveEntries(entries) {
+try { localStorage.setItem(STORAGE_KEY, JSON.stringify(entries)); } catch {}
+}
+
+/* ════════════════════════════════════════════
+Drawing Canvas (Ticket 4)
+════════════════════════════════════════════ */
+function DrawingCanvas({ width, height, drawingData, onDrawingChange, label }) {
+const canvasRef = useRef(null);
+const wrapperRef = useRef(null);
+const isDrawingRef = useRef(false);
+const toolRef = useRef(“pen”);
+const colorRef = useRef(”#2c2420”);
+const lastPos = useRef(null);
+const [tool, setTool] = useState(“pen”);
+const [penColor, setPenColor] = useState(”#2c2420”);
+const [history, setHistory] = useState([]);
+const [, forceRender] = useState(0);
+
+useEffect(() => { toolRef.current = tool; }, [tool]);
+useEffect(() => { colorRef.current = penColor; }, [penColor]);
+
+// Load drawing data
+useEffect(() => {
+const c = canvasRef.current.getContext(“2d”);
+c.clearRect(0, 0, width, height);
+if (drawingData) {
+const img = new Image();
+img.onload = () => c.drawImage(img, 0, 0);
+img.src = drawingData;
+}
+}, [drawingData, width, height]);
+
+// ── Pointer Events unified handler (mouse + touch + pen) ──
+useEffect(() => {
+const canvas = canvasRef.current;
+if (!canvas) return;
+
+```
+// Body scroll lock helpers
+const lockScroll = () => {
+  document.body.style.overflow = "hidden";
+  document.body.style.touchAction = "none";
+};
+const unlockScroll = () => {
+  document.body.style.overflow = "";
+  document.body.style.touchAction = "";
+};
+
+// Prevent any residual touch-based scrolling on document during draw
+const preventTouchMove = (e) => {
+  if (isDrawingRef.current) e.preventDefault();
+};
+
+const getPos = (e) => {
+  const rect = canvas.getBoundingClientRect();
+  return {
+    x: (e.clientX - rect.left) * (width / rect.width),
+    y: (e.clientY - rect.top) * (height / rect.height),
+  };
+};
+
+const onPointerDown = (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  canvas.setPointerCapture(e.pointerId);
+  isDrawingRef.current = true;
+  lastPos.current = getPos(e);
+  // Save undo snapshot
+  const snap = canvas.toDataURL();
+  setHistory(h => [...h, snap]);
+  lockScroll();
+};
+
+const onPointerMove = (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  if (!isDrawingRef.current) return;
+  const ctx = canvas.getContext("2d");
+  const pos = getPos(e);
+  const t = toolRef.current;
+  ctx.lineWidth = t === "eraser" ? 18 : 2.5;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.strokeStyle = t === "eraser" ? "#faf6f0" : colorRef.current;
+  ctx.globalCompositeOperation = t === "eraser" ? "destination-out" : "source-over";
+  ctx.beginPath();
+  ctx.moveTo(lastPos.current.x, lastPos.current.y);
+  ctx.lineTo(pos.x, pos.y);
+  ctx.stroke();
+  lastPos.current = pos;
+};
+
+const onPointerUp = (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  if (!isDrawingRef.current) return;
+  canvas.releasePointerCapture(e.pointerId);
+  isDrawingRef.current = false;
+  canvas.getContext("2d").globalCompositeOperation = "source-over";
+  unlockScroll();
+  onDrawingChange(canvas.toDataURL());
+};
+
+// Register with passive:false for all pointer events
+canvas.addEventListener("pointerdown", onPointerDown, { passive: false });
+canvas.addEventListener("pointermove", onPointerMove, { passive: false });
+canvas.addEventListener("pointerup", onPointerUp, { passive: false });
+canvas.addEventListener("pointercancel", onPointerUp, { passive: false });
+// Also block touch events at canvas level as fallback
+canvas.addEventListener("touchstart", (e) => e.preventDefault(), { passive: false });
+canvas.addEventListener("touchmove", (e) => e.preventDefault(), { passive: false });
+// Block document-level touchmove during drawing
+document.addEventListener("touchmove", preventTouchMove, { passive: false });
+
+return () => {
+  canvas.removeEventListener("pointerdown", onPointerDown);
+  canvas.removeEventListener("pointermove", onPointerMove);
+  canvas.removeEventListener("pointerup", onPointerUp);
+  canvas.removeEventListener("pointercancel", onPointerUp);
+  document.removeEventListener("touchmove", preventTouchMove);
+  unlockScroll();
+};
+```
+
+}, [width, height, onDrawingChange]);
+
+const undo = () => {
+if (!history.length) return;
+const prev = history.at(-1);
+setHistory(h => h.slice(0, -1));
+const ctx = canvasRef.current.getContext(“2d”);
+const img = new Image();
+img.onload = () => {
+ctx.clearRect(0, 0, width, height);
+ctx.drawImage(img, 0, 0);
+onDrawingChange(canvasRef.current.toDataURL());
+};
+img.src = prev;
+};
+
+const clearAll = () => {
+setHistory(h => […h, canvasRef.current.toDataURL()]);
+canvasRef.current.getContext(“2d”).clearRect(0, 0, width, height);
+onDrawingChange(canvasRef.current.toDataURL());
+};
+
+const tb = (lbl, fn, active) => (
+<button key={lbl} onClick={fn} style={{ padding: “3px 8px”, fontSize: 11, borderRadius: 10, border: active ? “2px solid #8b7355” : “1px solid #d4c5b0”, background: active ? “#f0e8d8” : “#fff”, cursor: “pointer”, fontFamily: “inherit” }}>{lbl}</button>
+);
+
+// CSS: full scroll/selection prevention on wrapper + canvas
+const wrapperStyle = {
+touchAction: “none”,
+WebkitTouchCallout: “none”,
+WebkitUserSelect: “none”,
+userSelect: “none”,
+overscrollBehavior: “none”,
+};
+const canvasStyle = {
+width: “100%”, height: “auto”, borderRadius: 4, display: “block”,
+cursor: tool === “eraser” ? “cell” : “crosshair”,
+touchAction: “none”,
+WebkitTouchCallout: “none”,
+WebkitUserSelect: “none”,
+userSelect: “none”,
+overscrollBehavior: “none”,
+};
+
+const PEN_COLORS = [
+{ color: “#2c2420”, name: “黒” },
+{ color: “#c0392b”, name: “赤” },
+{ color: “#2980b9”, name: “青” },
+{ color: “#27ae60”, name: “緑” },
+{ color: “#8e44ad”, name: “紫” },
+{ color: “#e67e22”, name: “橙” },
+{ color: “#f1c40f”, name: “黄” },
+];
+
+return (
+<div ref={wrapperRef} style={wrapperStyle}>
+{label && <div style={{ fontSize: 11, color: “#8b7355”, marginBottom: 4, textAlign: “center” }}>{label}</div>}
+<div style={{ display: “flex”, gap: 6, marginBottom: 6, justifyContent: “center”, flexWrap: “wrap” }}>
+{tb(“✏️ ペン”, () => setTool(“pen”), tool === “pen”)}
+{tb(“◻️ 消しゴム”, () => setTool(“eraser”), tool === “eraser”)}
+{tb(“↩ 戻す”, undo)} {tb(“🗑 全消し”, clearAll)}
+</div>
+{/* Color palette */}
+{tool === “pen” && (
+<div style={{ display: “flex”, gap: 5, marginBottom: 6, justifyContent: “center”, alignItems: “center” }}>
+{PEN_COLORS.map(c => (
+<button key={c.color} onClick={() => setPenColor(c.color)} title={c.name}
+style={{
+width: penColor === c.color ? 22 : 18,
+height: penColor === c.color ? 22 : 18,
+borderRadius: “50%”,
+background: c.color,
+border: penColor === c.color ? “2.5px solid #faf6f0” : “1.5px solid rgba(200,190,170,0.4)”,
+cursor: “pointer”,
+boxShadow: penColor === c.color ? `0 0 6px ${c.color}55` : “none”,
+transition: “all 0.15s ease”,
+flexShrink: 0,
+}} />
+))}
+</div>
+)}
+<canvas ref={canvasRef} width={width} height={height} style={canvasStyle} />
+</div>
+);
+}
+
+/* ════════════════════════════════════════════
+Mini Cheki Card (for book grid cell)
+════════════════════════════════════════════ */
+function MiniCard({ entry, onClick, isEmpty, slotNumber }) {
+if (isEmpty) {
+return (
+<div onClick={onClick} style={{
+width: “100%”, height: “100%”, borderRadius: 3,
+border: “1.5px dashed #d4c5b0”, background: “rgba(250,246,240,0.35)”,
+display: “flex”, flexDirection: “column”, alignItems: “center”, justifyContent: “center”,
+cursor: “pointer”, transition: “all 0.2s”,
+fontFamily: “‘Zen Kurenaido’, sans-serif”,
+}}>
+<span style={{ fontSize: 18, opacity: 0.2 }}>＋</span>
+<span style={{ fontSize: 8, color: “#c4b89a”, marginTop: 2 }}>No.{String(slotNumber).padStart(3, “0”)}</span>
+</div>
+);
+}
+
+return (
+<div onClick={onClick} style={{
+width: “100%”, height: “100%”, borderRadius: 2,
+background: “#faf6f0”, padding: “2px 2px 0”,
+cursor: “pointer”,
+boxShadow: “0 1px 4px rgba(60,50,40,0.1), inset 0 0 0 0.5px rgba(200,190,170,0.3)”,
+display: “flex”, flexDirection: “column”, overflow: “hidden”,
+transition: “transform 0.15s, box-shadow 0.15s”,
+fontFamily: “‘Zen Kurenaido’, sans-serif”, position: “relative”,
+}}>
+{/* Photo — fills top ~70% */}
+<div style={{
+flex: “1 1 0”, borderRadius: 1, overflow: “hidden”, minHeight: 0,
+background: entry.photo ? “none” : “linear-gradient(135deg,#e8ddd0,#d4c5b0)”,
+display: “flex”, alignItems: “center”, justifyContent: “center”,
+}}>
+{entry.photo ? (
+<img src={entry.photo} alt=”” style={{ width: “100%”, height: “100%”, objectFit: “cover”, display: “block” }} />
+) : (
+<span style={{ fontSize: 14, opacity: 0.25 }}>📷</span>
+)}
+</div>
+{/* Bottom strip — like cheki bottom white area */}
+<div style={{
+flex: “0 0 22%”, display: “flex”, flexDirection: “column”,
+alignItems: “center”, justifyContent: “center”, padding: “1px 2px”,
+}}>
+{entry.nameMode === “handwrite” && entry.nameDrawing ? (
+<img src={entry.nameDrawing} alt=”” style={{ height: 11, maxWidth: “95%”, objectFit: “contain”, display: “block” }} />
+) : (
+<div style={{ fontSize: 8, fontWeight: 700, color: entry.nameColor || “#2c2420”, overflow: “hidden”, textOverflow: “ellipsis”, whiteSpace: “nowrap”, textAlign: “center”, width: “100%” }}>
+{entry.drinkName || “—”}
+</div>
+)}
+<div style={{ fontSize: 6, color: “#a0937e”, marginTop: 1 }}>
+No.{String(entry.number).padStart(3, “0”)}
+</div>
+</div>
+</div>
+);
+}
+
+/* ════════════════════════════════════════════
+Full-size Cheki Card (detail / preview)
+════════════════════════════════════════════ */
+function ChekiCard({ entry }) {
+return (
+<div style={{
+width: 280, background: “#faf6f0”, borderRadius: 3,
+boxShadow: “0 2px 14px rgba(60,50,40,0.14), 0 1px 3px rgba(60,50,40,0.08)”,
+padding: “20px 10px 65px”,
+fontFamily: “‘Zen Kurenaido’, sans-serif”, position: “relative”,
+}}>
+{/* Photo — fills most of the card */}
+<div style={{
+width: “100%”, aspectRatio: “4/5”, borderRadius: 1, overflow: “hidden”,
+background: entry.photo ? “none” : “linear-gradient(135deg,#e8ddd0,#d4c5b0)”,
+display: “flex”, alignItems: “center”, justifyContent: “center”,
+}}>
+{entry.photo ? <img src={entry.photo} alt=”” style={{ width: “100%”, height: “100%”, objectFit: “cover” }} /> : <span style={{ fontSize: 32, opacity: 0.3 }}>📷</span>}
+</div>
+
+```
+  {/* Bottom white area — name centered */}
+  <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, height: 65, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
+    {entry.nameMode === "handwrite" && entry.nameDrawing ? (
+      <img src={entry.nameDrawing} alt="手書き名" style={{ height: 28, maxWidth: "85%", objectFit: "contain", display: "inline-block" }} />
+    ) : (
+      <div style={{
+        fontSize: 18, color: entry.nameColor || "#2c2420", fontWeight: 700,
+        overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+        maxWidth: "88%", textAlign: "center",
+      }}>
+        {entry.drinkName || "名前なし"}
+      </div>
+    )}
+    <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 1 }}>
+      <span style={{ fontSize: 10, color: "#8b7355", letterSpacing: 1 }}>No.{String(entry.number).padStart(3, "0")}</span>
+      {entry.date && <span style={{ fontSize: 9, color: "#a0937e" }}>📅 {entry.date}</span>}
+      {entry.location && <span style={{ fontSize: 9, color: "#a0937e" }}>📍 {entry.location}</span>}
+    </div>
+  </div>
+
+  {/* Drawing overlay on bottom area */}
+  {entry.drawing && <img src={entry.drawing} alt="" style={{ position: "absolute", bottom: 2, left: 10, width: "calc(100% - 20px)", height: 60, pointerEvents: "none", opacity: 0.85, objectFit: "contain" }} />}
+</div>
+```
+
+);
+}
+
+/* ════════════════════════════════════════════
+Developing Animation
+════════════════════════════════════════════ */
+function DevelopingAnimation({ entry, onComplete }) {
+const [phase, setPhase] = useState(0);
+useEffect(() => {
+const t1 = setTimeout(() => setPhase(1), 500);
+const t2 = setTimeout(() => setPhase(2), 1800);
+const t3 = setTimeout(onComplete, 3200);
+return () => { clearTimeout(t1); clearTimeout(t2); clearTimeout(t3); };
+}, [onComplete]);
+
+return (
+<div style={{ position: “fixed”, inset: 0, zIndex: 1000, background: “rgba(20,18,15,0.78)”, backdropFilter: “blur(8px)”, display: “flex”, alignItems: “center”, justifyContent: “center”, flexDirection: “column”, fontFamily: “‘Zen Kurenaido’, sans-serif” }}>
+<div style={{ transform: phase >= 1 ? “translateY(0) scale(1)” : “translateY(100px) scale(0.88)”, opacity: phase >= 1 ? 1 : 0, transition: “all 0.7s cubic-bezier(0.34,1.56,0.64,1)” }}>
+<div style={{ filter: phase < 2 ? “brightness(0.9) saturate(0.3)” : “brightness(1) saturate(1)”, transition: “filter 1s ease” }}>
+<ChekiCard entry={entry} />
+</div>
+</div>
+<div style={{ marginTop: 24, color: “#faf6f0”, fontSize: 16, opacity: phase >= 2 ? 1 : 0, transform: phase >= 2 ? “translateY(0)” : “translateY(8px)”, transition: “all 0.5s ease 0.15s”, textAlign: “center” }}>
+<div style={{ fontSize: 13, opacity: 0.65, marginBottom: 3 }}>✨ 現像完了</div>
+<div>No.{String(entry.number).padStart(3, “0”)}　{entry.drinkName}　登録完了</div>
+</div>
+</div>
+);
+}
+
+/* ════════════════════════════════════════════
+Camera / Photo Capture (Ticket 2)
+════════════════════════════════════════════ */
+function PhotoCapture({ onCapture, onCancel }) {
+const fileRef = useRef(null);
+const [preview, setPreview] = useState(null);
+const handleFile = (e) => { const f = e.target.files?.[0]; if (!f) return; const r = new FileReader(); r.onload = (ev) => setPreview(ev.target.result); r.readAsDataURL(f); };
+
+return (
+<div style={{ position: “fixed”, inset: 0, zIndex: 900, background: “rgba(20,18,15,0.88)”, backdropFilter: “blur(6px)”, display: “flex”, flexDirection: “column”, alignItems: “center”, justifyContent: “center”, padding: 24, fontFamily: “‘Zen Kurenaido’, sans-serif” }}>
+{!preview ? (
+<>
+<div style={{ color: “#faf6f0”, fontSize: 18, marginBottom: 24 }}>写真を選んでください</div>
+<div style={{ display: “flex”, gap: 14 }}>
+<button onClick={() => { fileRef.current.setAttribute(“capture”, “environment”); fileRef.current.click(); }} style={btnPrimary}>📷 カメラで撮影</button>
+<button onClick={() => { fileRef.current.removeAttribute(“capture”); fileRef.current.click(); }} style={btnPrimary}>🖼 カメラロール</button>
+</div>
+<button onClick={onCancel} style={{ …btnGhost, marginTop: 18, color: “#d4c5b0”, borderColor: “#8b7355” }}>キャンセル</button>
+<input ref={fileRef} type=“file” accept=“image/*” onChange={handleFile} style={{ display: “none” }} />
+</>
+) : (
+<>
+<img src={preview} alt=”” style={{ maxWidth: 260, maxHeight: 300, borderRadius: 6, objectFit: “cover” }} />
+<div style={{ display: “flex”, gap: 14, marginTop: 18 }}>
+<button onClick={() => setPreview(null)} style={{ …btnGhost, color: “#d4c5b0”, borderColor: “#8b7355” }}>撮り直す</button>
+<button onClick={() => onCapture(preview)} style={btnPrimary}>この写真を使う</button>
+</div>
+</>
+)}
+</div>
+);
+}
+
+/* ════════════════════════════════════════════
+Card Editor (Tickets 1,3,4,5)
+════════════════════════════════════════════ */
+function CardEditor({ photo, existingEntry, nextNumber, onSave, onCancel }) {
+const [drinkName, setDrinkName] = useState(existingEntry?.drinkName || “”);
+const [nameMode, setNameMode] = useState(existingEntry?.nameMode || “type”); // “type” or “handwrite”
+const [nameDrawing, setNameDrawing] = useState(existingEntry?.nameDrawing || null);
+const [nameColor, setNameColor] = useState(existingEntry?.nameColor || “#2c2420”);
+const [number, setNumber] = useState(existingEntry?.number || nextNumber);
+const [location, setLocation] = useState(existingEntry?.location || “”);
+const [date] = useState(existingEntry?.date || new Date().toLocaleDateString(“ja-JP”));
+const [showLocation, setShowLocation] = useState(existingEntry?.showLocation ?? true);
+const [showDate, setShowDate] = useState(existingEntry?.showDate ?? true);
+const [drawing, setDrawing] = useState(existingEntry?.drawing || null);
+const [showDrawing, setShowDrawing] = useState(false);
+const [geoStatus, setGeoStatus] = useState(””);
+
+useEffect(() => {
+if (!existingEntry && navigator.geolocation) {
+setGeoStatus(“取得中…”);
+navigator.geolocation.getCurrentPosition(
+(p) => { setLocation(`${p.coords.latitude.toFixed(2)}°N, ${p.coords.longitude.toFixed(2)}°E`); setGeoStatus(””); },
+() => { setGeoStatus(””); }, { timeout: 5000 });
+}
+}, [existingEntry]);
+
+// When handwriting mode, use a sentinel name so save is enabled
+const effectiveName = nameMode === “handwrite” ? (nameDrawing ? “（手書き）” : “”) : drinkName;
+const canSave = nameMode === “handwrite” ? !!nameDrawing : !!drinkName.trim();
+
+const entry = {
+id: existingEntry?.id || Date.now().toString(),
+photo: photo || existingEntry?.photo,
+drinkName: effectiveName, nameMode, nameDrawing, nameColor,
+number, location, date, drawing, showLocation, showDate,
+createdAt: existingEntry?.createdAt || Date.now(),
+};
+
+const modeBtn = (mode, label) => (
+<button onClick={() => setNameMode(mode)}
+style={{
+flex: 1, padding: “7px 0”, fontSize: 13, borderRadius: 10,
+border: nameMode === mode ? “2px solid #8b7355” : “1px solid #d4c5b0”,
+background: nameMode === mode ? “#f0e8d8” : “#fff”,
+color: “#2c2420”, cursor: “pointer”, fontFamily: “inherit”, fontWeight: nameMode === mode ? 600 : 400,
+transition: “all 0.15s”,
+}}>{label}</button>
+);
+
+return (
+<div style={{ minHeight: “100vh”, background: “#f5efe6”, padding: “16px 16px 100px”, fontFamily: “‘Zen Kurenaido’, sans-serif” }}>
+<div style={{ maxWidth: 330, margin: “0 auto” }}>
+<div style={{ display: “flex”, justifyContent: “space-between”, alignItems: “center”, marginBottom: 14 }}>
+<button onClick={onCancel} style={{ background: “none”, border: “none”, fontSize: 13, color: “#8b7355”, cursor: “pointer”, fontFamily: “inherit” }}>← 戻る</button>
+<span style={{ fontSize: 13, color: “#a0937e” }}>カード編集</span>
+</div>
+<div style={{ display: “flex”, justifyContent: “center”, marginBottom: 18 }}>
+<ChekiCard entry={{ …entry, location: showLocation ? location : “”, date: showDate ? date : “” }} />
+</div>
+
+```
+    {/* ── Name input: toggle between typing and handwriting ── */}
+    <div style={{ marginBottom: 14 }}>
+      <div style={{ fontSize: 12, color: "#6b5e4e", marginBottom: 6 }}>お酒の名前</div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+        {modeBtn("type", "⌨ タイピング")}
+        {modeBtn("handwrite", "✏️ 手書き")}
+      </div>
+      {nameMode === "type" ? (
+        <div>
+          <input value={drinkName} onChange={e => setDrinkName(e.target.value.slice(0, 30))} placeholder="例：ジントニック" maxLength={30} style={{ ...inputStyle, width: "100%", boxSizing: "border-box", color: nameColor }} />
+          <span style={{ fontSize: 10, color: "#a0937e", display: "block", textAlign: "right", marginTop: 2 }}>{drinkName.length}/30</span>
+          {/* Color picker for typed name */}
+          <div style={{ display: "flex", gap: 6, marginTop: 6, justifyContent: "center", alignItems: "center" }}>
+            <span style={{ fontSize: 10, color: "#a0937e", marginRight: 2 }}>文字色</span>
+            {NAME_COLORS.map(c => (
+              <button key={c.color} onClick={() => setNameColor(c.color)} title={c.name}
+                style={{
+                  width: nameColor === c.color ? 22 : 18,
+                  height: nameColor === c.color ? 22 : 18,
+                  borderRadius: "50%", background: c.color,
+                  border: nameColor === c.color ? "2.5px solid #8b7355" : "1.5px solid #d4c5b0",
+                  cursor: "pointer",
+                  boxShadow: nameColor === c.color ? `0 0 6px ${c.color}44` : "none",
+                  transition: "all 0.15s ease", flexShrink: 0,
+                }} />
+            ))}
+          </div>
+        </div>
+      ) : (
+        <div style={{ background: "#faf6f0", borderRadius: 8, padding: 8, border: "1px solid #e8ddd0" }}>
+          <DrawingCanvas width={268} height={60} drawingData={nameDrawing} onDrawingChange={setNameDrawing} label="ここに名前を書いてください" />
+        </div>
+      )}
+    </div>
+
+    {/* ── Memo drawing area ── */}
+    <div style={{ textAlign: "center", marginBottom: 14 }}>
+      <button onClick={() => setShowDrawing(!showDrawing)} style={{ ...btnGhost, fontSize: 13 }}>
+        {showDrawing ? "メモ手書きを閉じる" : "✏️ メモを手書きする"}
+      </button>
+    </div>
+    {showDrawing && (
+      <div style={{ background: "#faf6f0", borderRadius: 8, padding: 8, marginBottom: 14, border: "1px solid #e8ddd0" }}>
+        <DrawingCanvas width={268} height={100} drawingData={drawing} onDrawingChange={setDrawing} label="メモ・イラストなど" />
+      </div>
+    )}
+
+    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      <label style={labelStyle}><span>No.</span>
+        <input type="number" value={number} onChange={e => setNumber(Math.max(1, parseInt(e.target.value) || 1))} min={1} style={{ ...inputStyle, width: 80 }} />
+      </label>
+      <label style={labelStyle}><span>場所 {geoStatus && <small style={{ color: "#a0937e" }}>({geoStatus})</small>}</span>
+        <input value={location} onChange={e => setLocation(e.target.value.slice(0, 40))} placeholder="例：六本木 Bar High Five" maxLength={40} style={inputStyle} />
+      </label>
+      <div style={{ display: "flex", gap: 14, marginTop: 2 }}>
+        <label style={{ fontSize: 12, color: "#6b5e4e", display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}>
+          <input type="checkbox" checked={showDate} onChange={e => setShowDate(e.target.checked)} /> 日時を表示
+        </label>
+        <label style={{ fontSize: 12, color: "#6b5e4e", display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}>
+          <input type="checkbox" checked={showLocation} onChange={e => setShowLocation(e.target.checked)} /> 場所を表示
+        </label>
+      </div>
+    </div>
+    <button onClick={() => onSave(entry)} disabled={!canSave}
+      style={{ ...btnPrimary, width: "100%", marginTop: 20, padding: "13px 0", fontSize: 15, fontWeight: 600, opacity: canSave ? 1 : 0.5, boxShadow: canSave ? "0 4px 16px rgba(180,140,80,0.25)" : "none" }}>
+      💾 保存して登録する
+    </button>
+  </div>
+</div>
+```
+
+);
+}
+
+/* ════════════════════════════════════════════
+Detail View
+════════════════════════════════════════════ */
+function DetailView({ entry, onBack, onEdit, onDelete }) {
+return (
+<div style={{ minHeight: “100vh”, background: “#f5efe6”, padding: “16px”, fontFamily: “‘Zen Kurenaido’, sans-serif” }}>
+<div style={{ maxWidth: 330, margin: “0 auto” }}>
+<button onClick={onBack} style={{ background: “none”, border: “none”, fontSize: 13, color: “#8b7355”, cursor: “pointer”, fontFamily: “inherit”, marginBottom: 14 }}>← 図鑑に戻る</button>
+<div style={{ display: “flex”, justifyContent: “center” }}><ChekiCard entry={entry} /></div>
+<div style={{ display: “flex”, gap: 10, marginTop: 20, justifyContent: “center” }}>
+<button onClick={() => onEdit(entry)} style={btnGhost}>✏️ 編集</button>
+<button onClick={() => { if (confirm(“削除しますか？”)) onDelete(entry.id); }} style={{ …btnGhost, color: “#c45c5c”, borderColor: “#e0b0b0” }}>🗑 削除</button>
+</div>
+</div>
+</div>
+);
+}
+
+/* ════════════════════════════════════════════
+Progress Computation (種類数ベース)
+════════════════════════════════════════════ */
+const GOAL = 100;
+
+function computeProgress(entries) {
+const seen = new Set();
+const uniqueEntries = [];
+for (const e of entries) {
+const key = e.nameMode === “handwrite” ? `__hw_${e.id}` : e.drinkName.trim().toLowerCase();
+if (!seen.has(key)) { seen.add(key); uniqueEntries.push(e); }
+}
+const uniqueDrinkCount = uniqueEntries.length;
+const remainingCount = Math.max(GOAL - uniqueDrinkCount, 0);
+const progressPercent = Math.floor((Math.min(uniqueDrinkCount, GOAL) / GOAL) * 100);
+const today = new Date().toLocaleDateString(“ja-JP”);
+const todayNewCount = uniqueEntries.filter(e => e.date === today).length;
+const recentUniqueDrinks = […uniqueEntries].sort((a, b) => b.createdAt - a.createdAt).slice(0, 5);
+return { uniqueDrinkCount, remainingCount, progressPercent, todayNewCount, recentUniqueDrinks };
+}
+
+/* ════════════════════════════════════════════
+Completion Celebration (100種類達成)
+════════════════════════════════════════════ */
+function CompletionCelebration({ onClose }) {
+const [show, setShow] = useState(false);
+useEffect(() => { setTimeout(() => setShow(true), 100); }, []);
+return (
+<div style={{ position: “fixed”, inset: 0, zIndex: 1100, background: “rgba(20,18,15,0.85)”, backdropFilter: “blur(10px)”, display: “flex”, alignItems: “center”, justifyContent: “center”, flexDirection: “column”, fontFamily: “‘Zen Kurenaido’, sans-serif”, opacity: show ? 1 : 0, transition: “opacity 0.6s ease” }}>
+<div style={{ fontSize: 64, marginBottom: 16, transform: show ? “scale(1) rotate(0deg)” : “scale(0) rotate(-180deg)”, transition: “transform 0.8s cubic-bezier(0.34,1.56,0.64,1) 0.3s” }}>🏆</div>
+<div style={{ fontSize: 28, color: “#d4a76a”, fontWeight: 700, letterSpacing: 4, opacity: show ? 1 : 0, transform: show ? “translateY(0)” : “translateY(20px)”, transition: “all 0.6s ease 0.6s” }}>100 / 100 達成！</div>
+<div style={{ fontSize: 16, color: “#e8ddd0”, marginTop: 8, letterSpacing: 2, opacity: show ? 1 : 0, transform: show ? “translateY(0)” : “translateY(15px)”, transition: “all 0.5s ease 0.9s” }}>お酒図鑑 コンプリート！</div>
+<div style={{ fontSize: 12, color: “#a0937e”, marginTop: 24, opacity: show ? 1 : 0, transition: “opacity 0.5s ease 1.3s” }}>おめでとうございます 🎉</div>
+<button onClick={onClose} style={{ …btnPrimary, marginTop: 32, opacity: show ? 1 : 0, transition: “opacity 0.5s ease 1.5s” }}>図鑑に戻る</button>
+</div>
+);
+}
+
+/* ════════════════════════════════════════════
+Progress Summary Widget
+════════════════════════════════════════════ */
+function ProgressSummary({ entries }) {
+const { uniqueDrinkCount, remainingCount, progressPercent, todayNewCount, recentUniqueDrinks } = computeProgress(entries);
+const isComplete = uniqueDrinkCount >= GOAL;
+const [expanded, setExpanded] = useState(false);
+
+return (
+<div style={{ width: “100%”, maxWidth: 380, padding: “0 4px”, boxSizing: “border-box”, marginBottom: 10 }}>
+<div style={{ background: “rgba(250,246,240,0.08)”, border: “1px solid rgba(212,167,106,0.25)”, borderRadius: 10, padding: “12px 14px”, backdropFilter: “blur(4px)” }}>
+{/* Main stats */}
+<div style={{ display: “flex”, alignItems: “baseline”, justifyContent: “space-between”, marginBottom: 8 }}>
+<div>
+<span style={{ fontSize: 28, color: isComplete ? “#d4a76a” : “#e8ddd0”, fontWeight: 700 }}>{uniqueDrinkCount}</span>
+<span style={{ fontSize: 13, color: “#a0937e”, marginLeft: 2 }}>/ {GOAL} 種類</span>
+</div>
+<div style={{ textAlign: “right” }}>
+{isComplete
+? <span style={{ fontSize: 13, color: “#d4a76a”, fontWeight: 600 }}>🏆 コンプリート！</span>
+: <span style={{ fontSize: 11, color: “#a0937e” }}>あと {remainingCount} 種類</span>}
+</div>
+</div>
+{/* Progress bar */}
+<div style={{ width: “100%”, height: 8, background: “rgba(100,90,75,0.3)”, borderRadius: 4, overflow: “hidden”, marginBottom: 8 }}>
+<div style={{
+width: `${progressPercent}%`, height: “100%”,
+background: isComplete ? “linear-gradient(90deg, #d4a76a, #e8c56a, #d4a76a)” : “linear-gradient(90deg, #8b7355, #d4a76a)”,
+borderRadius: 4, transition: “width 0.6s ease”,
+}} />
+</div>
+{/* Sub stats */}
+<div style={{ display: “flex”, justifyContent: “space-between”, alignItems: “center” }}>
+<span style={{ fontSize: 11, color: “#a0937e” }}>達成率 {progressPercent}%</span>
+<span style={{ fontSize: 11, color: todayNewCount > 0 ? “#d4a76a” : “#6b5e4e”, fontWeight: todayNewCount > 0 ? 600 : 400 }}>
+{todayNewCount > 0 ? “✨ “ : “”}今日の新規 {todayNewCount} 種類
+</span>
+</div>
+{/* Recent additions */}
+{recentUniqueDrinks.length > 0 && (
+<>
+<button onClick={() => setExpanded(!expanded)} style={{ background: “none”, border: “none”, padding: “6px 0 0”, cursor: “pointer”, fontSize: 10, color: “#8b7355”, fontFamily: “inherit”, width: “100%”, textAlign: “left” }}>
+{expanded ? “▾ 最近の追加を閉じる” : “▸ 最近の追加を見る”}
+</button>
+{expanded && (
+<div style={{ marginTop: 6, paddingTop: 6, borderTop: “1px solid rgba(212,167,106,0.15)” }}>
+{recentUniqueDrinks.map(e => (
+<div key={e.id} style={{ display: “flex”, alignItems: “center”, gap: 8, padding: “3px 0”, fontSize: 11, color: “#d4c5b0” }}>
+<span style={{ color: “#8b7355”, fontSize: 9, minWidth: 36 }}>No.{String(e.number).padStart(3, “0”)}</span>
+{e.nameMode === “handwrite” && e.nameDrawing
+? <img src={e.nameDrawing} alt=”” style={{ height: 12, maxWidth: 120, objectFit: “contain” }} />
+: <span style={{ overflow: “hidden”, textOverflow: “ellipsis”, whiteSpace: “nowrap” }}>{e.drinkName}</span>}
+{e.date && <span style={{ fontSize: 9, color: “#6b5e4e”, marginLeft: “auto”, flexShrink: 0 }}>{e.date}</span>}
+</div>
+))}
+</div>
+)}
+</>
+)}
+</div>
+</div>
+);
+}
+
+/* ════════════════════════════════════════════
+Book-style Gallery — 3×3 grid per page
+════════════════════════════════════════════ */
+function BookGallery({ entries, onSelect, onNewEntry }) {
+const [page, setPage] = useState(0);
+const [sortBy, setSortBy] = useState(“number”);
+const [search, setSearch] = useState(””);
+const [turning, setTurning] = useState(null);
+const [showCelebration, setShowCelebration] = useState(false);
+const prevCountRef = useRef(computeProgress(entries).uniqueDrinkCount);
+
+// Detect when 100 is reached
+useEffect(() => {
+const { uniqueDrinkCount } = computeProgress(entries);
+if (uniqueDrinkCount >= GOAL && prevCountRef.current < GOAL) {
+setShowCelebration(true);
+}
+prevCountRef.current = uniqueDrinkCount;
+}, [entries]);
+
+const filtered = entries
+.filter(e => !search || e.drinkName.toLowerCase().includes(search.toLowerCase()) || e.location?.toLowerCase().includes(search.toLowerCase()))
+.sort((a, b) => {
+if (sortBy === “number”) return a.number - b.number;
+if (sortBy === “date”) return b.createdAt - a.createdAt;
+if (sortBy === “location”) return (a.location || “”).localeCompare(b.location || “”);
+return 0;
+});
+
+const totalPages = Math.max(1, Math.ceil(filtered.length / ITEMS_PER_PAGE));
+const currentPage = Math.min(page, totalPages - 1);
+const pageStart = currentPage * ITEMS_PER_PAGE;
+
+const slots = [];
+for (let i = 0; i < ITEMS_PER_PAGE; i++) {
+const entry = filtered[pageStart + i];
+const slotNumber = pageStart + i + 1;
+slots.push(entry ? { entry, slotNumber } : { entry: null, slotNumber });
+}
+
+const turnPage = (dir) => {
+setTurning(dir);
+setTimeout(() => {
+setPage(p => dir === “next” ? Math.min(p + 1, totalPages - 1) : Math.max(p - 1, 0));
+setTurning(null);
+}, 320);
+};
+
+return (
+<div style={{
+minHeight: “100vh”,
+background: “linear-gradient(160deg, #3a342c 0%, #2a2520 50%, #1e1a16 100%)”,
+display: “flex”, flexDirection: “column”, alignItems: “center”,
+fontFamily: “‘Zen Kurenaido’, sans-serif”, padding: “12px 8px 80px”,
+}}>
+{/* Title */}
+<div style={{ textAlign: “center”, marginBottom: 10, marginTop: 6 }}>
+<h1 style={{ fontSize: 24, color: “#d4a76a”, margin: 0, letterSpacing: 6, fontWeight: 700, textShadow: “0 1px 4px rgba(0,0,0,0.4)” }}>
+🍶 お酒図鑑
+</h1>
+<p style={{ fontSize: 10, color: “#a0937e”, margin: “2px 0 0”, letterSpacing: 2 }}>
+{entries.length} 杯のコレクション
+</p>
+</div>
+
+```
+  {/* Progress */}
+  <ProgressSummary entries={entries} />
+
+  {/* Celebration overlay */}
+  {showCelebration && <CompletionCelebration onClose={() => setShowCelebration(false)} />}
+
+  {/* Search & Sort */}
+  <div style={{ width: "100%", maxWidth: 380, marginBottom: 8, padding: "0 4px", boxSizing: "border-box" }}>
+    <input value={search} onChange={e => { setSearch(e.target.value); setPage(0); }}
+      placeholder="🔍 名前・場所で検索…"
+      style={{ ...inputStyle, width: "100%", boxSizing: "border-box", padding: "7px 11px", fontSize: 12, background: "rgba(250,246,240,0.92)", border: "1px solid #8b7355" }} />
+    <div style={{ display: "flex", gap: 6, marginTop: 6, justifyContent: "center" }}>
+      {[{ key: "number", label: "No.順" }, { key: "date", label: "日付順" }, { key: "location", label: "場所順" }].map(s => (
+        <button key={s.key} onClick={() => { setSortBy(s.key); setPage(0); }}
+          style={{
+            padding: "3px 10px", fontSize: 10, borderRadius: 10,
+            border: sortBy === s.key ? "1.5px solid #d4a76a" : "1px solid #6b5e4e",
+            background: sortBy === s.key ? "rgba(212,167,106,0.2)" : "transparent",
+            color: sortBy === s.key ? "#d4a76a" : "#a0937e",
+            cursor: "pointer", fontFamily: "inherit",
+          }}>{s.label}</button>
+      ))}
+    </div>
+  </div>
+
+  {/* ── The Book ── */}
+  <div style={{
+    width: "100%", maxWidth: 380,
+    background: "linear-gradient(135deg, #f7f1e6 0%, #ede5d6 40%, #e8dece 100%)",
+    borderRadius: 6, position: "relative", overflow: "hidden",
+    boxShadow: "0 8px 40px rgba(0,0,0,0.45), inset 0 0 0 1px rgba(180,160,130,0.3), inset -3px 0 8px rgba(0,0,0,0.06)",
+    display: "flex", flexDirection: "column",
+  }}>
+    {/* Spine */}
+    <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 6, background: "linear-gradient(90deg, rgba(0,0,0,0.12), transparent)", zIndex: 2 }} />
+    {/* Texture */}
+    <div style={{ position: "absolute", inset: 0, opacity: 0.03, backgroundImage: "repeating-linear-gradient(0deg, transparent, transparent 19px, #8b7355 19px, #8b7355 20px)", pointerEvents: "none" }} />
+
+    {/* Page header */}
+    <div style={{ padding: "10px 14px 5px", borderBottom: "1.5px solid #d4c5b0", display: "flex", justifyContent: "space-between", alignItems: "baseline", position: "relative", zIndex: 1 }}>
+      <span style={{ fontSize: 9, color: "#8b7355", letterSpacing: 2 }}>お酒図鑑</span>
+      <span style={{ fontSize: 9, color: "#a0937e" }}>p.{currentPage + 1} / {totalPages}</span>
+    </div>
+    <div style={{ padding: "3px 14px 0", display: "flex", justifyContent: "space-between", position: "relative", zIndex: 1 }}>
+      <span style={{ fontSize: 8, color: "#b8a88e" }}>
+        No.{String(pageStart + 1).padStart(3, "0")} – No.{String(pageStart + ITEMS_PER_PAGE).padStart(3, "0")}
+      </span>
+    </div>
+
+    {/* 3x3 Grid */}
+    <div style={{
+      padding: "8px 12px 12px",
+      display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gridTemplateRows: "repeat(3, 1fr)",
+      gap: 7, position: "relative", zIndex: 1,
+      aspectRatio: "3/4.2",
+      opacity: turning ? 0.15 : 1,
+      transform: turning === "next" ? "translateX(-20px)" : turning === "prev" ? "translateX(20px)" : "translateX(0)",
+      transition: "opacity 0.22s ease, transform 0.22s ease",
+    }}>
+      {slots.map((slot, i) => (
+        <MiniCard
+          key={`${currentPage}-${i}`}
+          entry={slot.entry}
+          isEmpty={!slot.entry}
+          slotNumber={slot.slotNumber}
+          onClick={() => slot.entry ? onSelect(slot.entry) : onNewEntry()}
+        />
+      ))}
+    </div>
+
+    {/* Corner fold */}
+    {currentPage < totalPages - 1 && (
+      <div style={{ position: "absolute", bottom: 6, right: 6, width: 18, height: 18, background: "linear-gradient(135deg, transparent 50%, rgba(180,160,130,0.3) 50%)", borderRadius: "0 0 3px 0", zIndex: 3 }} />
+    )}
+  </div>
+
+  {/* Navigation */}
+  <div style={{ display: "flex", alignItems: "center", gap: 14, marginTop: 12 }}>
+    <button onClick={() => currentPage > 0 && turnPage("prev")} disabled={currentPage === 0}
+      style={{ width: 36, height: 36, borderRadius: "50%", border: "1px solid #6b5e4e", background: currentPage > 0 ? "rgba(212,167,106,0.15)" : "transparent", color: currentPage > 0 ? "#d4a76a" : "#5a5047", fontSize: 14, cursor: currentPage > 0 ? "pointer" : "default", fontFamily: "inherit" }}>◀</button>
+    <div style={{ display: "flex", gap: 4 }}>
+      {Array.from({ length: Math.min(totalPages, 7) }, (_, i) => {
+        let pageIdx = i;
+        if (totalPages > 7) {
+          if (currentPage < 4) pageIdx = i;
+          else if (currentPage > totalPages - 5) pageIdx = totalPages - 7 + i;
+          else pageIdx = currentPage - 3 + i;
+        }
+        return (
+          <button key={pageIdx} onClick={() => { setTurning(pageIdx > currentPage ? "next" : "prev"); setTimeout(() => { setPage(pageIdx); setTurning(null); }, 280); }}
+            style={{
+              width: 22, height: 22, borderRadius: "50%", border: "none",
+              background: pageIdx === currentPage ? "#d4a76a" : "rgba(160,147,126,0.2)",
+              color: pageIdx === currentPage ? "#1e1a16" : "#a0937e",
+              fontSize: 9, fontWeight: pageIdx === currentPage ? 700 : 400,
+              cursor: "pointer", fontFamily: "inherit",
+            }}>{pageIdx + 1}</button>
+        );
+      })}
+    </div>
+    <button onClick={() => currentPage < totalPages - 1 && turnPage("next")} disabled={currentPage >= totalPages - 1}
+      style={{ width: 36, height: 36, borderRadius: "50%", border: "1px solid #6b5e4e", background: currentPage < totalPages - 1 ? "rgba(212,167,106,0.15)" : "transparent", color: currentPage < totalPages - 1 ? "#d4a76a" : "#5a5047", fontSize: 14, cursor: currentPage < totalPages - 1 ? "pointer" : "default", fontFamily: "inherit" }}>▶</button>
+  </div>
+
+  {/* FAB */}
+  <button onClick={onNewEntry}
+    style={{
+      position: "fixed", bottom: 18, right: 18, width: 54, height: 54,
+      borderRadius: "50%", border: "none", fontSize: 24,
+      background: "linear-gradient(135deg, #d4a76a, #b8894a)",
+      color: "#fff", boxShadow: "0 4px 20px rgba(180,140,80,0.45)",
+      cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+      zIndex: 100,
+    }}>+</button>
+</div>
+```
+
+);
+}
+
+/* ════════════════════════════════════════════
+Main App
+════════════════════════════════════════════ */
+function App() {
+const [entries, setEntries] = useState([]);
+const [screen, setScreen] = useState(“gallery”);
+const [selectedEntry, setSelectedEntry] = useState(null);
+const [capturedPhoto, setCapturedPhoto] = useState(null);
+const [developing, setDeveloping] = useState(null);
+const [loaded, setLoaded] = useState(false);
+
+useEffect(() => { loadEntries().then(e => { setEntries(e); setLoaded(true); }); }, []);
+useEffect(() => { if (loaded) saveEntries(entries); }, [entries, loaded]);
+
+const nextNumber = entries.length > 0 ? Math.max(…entries.map(e => e.number)) + 1 : 1;
+
+const handleSave = useCallback((entry) => {
+setEntries(prev => {
+const idx = prev.findIndex(e => e.id === entry.id);
+if (idx >= 0) { const n = […prev]; n[idx] = entry; return n; }
+return […prev, entry];
+});
+setDeveloping(entry);
+}, []);
+
+const handleDelete = useCallback((id) => {
+setEntries(prev => prev.filter(e => e.id !== id));
+setScreen(“gallery”);
+}, []);
+
+if (!loaded) {
+return (
+<div style={{ minHeight: “100vh”, background: “#2a2520”, display: “flex”, alignItems: “center”, justifyContent: “center”, fontFamily: “‘Zen Kurenaido’, sans-serif” }}>
+<div style={{ textAlign: “center”, color: “#d4a76a” }}>
+<div style={{ fontSize: 36, marginBottom: 8 }}>🍶</div>
+<div>読み込み中…</div>
+</div>
+</div>
+);
+}
+
+return (
+<>
+{developing && <DevelopingAnimation entry={developing} onComplete={() => { setDeveloping(null); setScreen(“gallery”); }} />}
+{screen === “camera” && <PhotoCapture onCapture={p => { setCapturedPhoto(p); setScreen(“editor”); }} onCancel={() => setScreen(“gallery”)} />}
+{screen === “editor” && <CardEditor photo={capturedPhoto} existingEntry={selectedEntry} nextNumber={nextNumber} onSave={handleSave} onCancel={() => { setScreen(“gallery”); setSelectedEntry(null); setCapturedPhoto(null); }} />}
+{screen === “detail” && selectedEntry && <DetailView entry={selectedEntry} onBack={() => { setScreen(“gallery”); setSelectedEntry(null); }} onEdit={e => { setSelectedEntry(e); setCapturedPhoto(null); setScreen(“editor”); }} onDelete={handleDelete} />}
+{screen === “gallery” && <BookGallery entries={entries} onSelect={e => { setSelectedEntry(e); setScreen(“detail”); }} onNewEntry={() => { setSelectedEntry(null); setCapturedPhoto(null); setScreen(“camera”); }} />}
+</>
+);
+}
+
+/* ── Shared Styles ── */
+const btnPrimary = { padding: “9px 20px”, fontSize: 14, borderRadius: 20, border: “none”, background: “linear-gradient(135deg, #d4a76a, #c4935a)”, color: “#fff”, cursor: “pointer”, fontFamily: “‘Zen Kurenaido’, sans-serif”, fontWeight: 600, transition: “all 0.15s”, boxShadow: “0 2px 8px rgba(180,140,80,0.3)” };
+const btnGhost = { padding: “8px 18px”, fontSize: 13, borderRadius: 18, border: “1px solid #d4c5b0”, background: “transparent”, color: “#8b7355”, cursor: “pointer”, fontFamily: “‘Zen Kurenaido’, sans-serif”, transition: “all 0.15s” };
+const labelStyle = { display: “flex”, flexDirection: “column”, gap: 3, fontSize: 12, color: “#6b5e4e” };
+const inputStyle = { padding: “8px 12px”, fontSize: 14, borderRadius: 8, border: “1px solid #d4c5b0”, background: “#faf6f0”, color: “#2c2420”, outline: “none”, fontFamily: “‘Zen Kurenaido’, sans-serif” };
+
+ReactDOM.createRoot(document.getElementById(“root”)).render(React.createElement(App));
+</script>
+
+</body>
+</html>
